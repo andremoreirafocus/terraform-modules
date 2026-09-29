@@ -33,3 +33,8 @@ variable "db_port" {
   type        = number
 }
 
+variable "user_names" {
+  description = "Create IAM users with these names"
+  type        = list(string)
+  default     = ["neo", "trinity", "morpheus"]
+}
