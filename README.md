@@ -62,7 +62,7 @@ Outputs:
 
 ## Example consumer configuration
 
-In an environment root outside this repository, reference the modules by a relative path (or pin a VCS release when consuming the repository remotely):
+Reference a tagged version of each module from this repository:
 
 ```hcl
 provider "aws" {
@@ -70,14 +70,14 @@ provider "aws" {
 }
 
 module "mysql" {
-  source = "../terraform-modules/modules/data-stores/mysql"
+  source = "github.com/andremoreirafocus/terraform-modules.git//modules/data-stores/mysql?ref=v0.0.1"
 
   db_username = var.db_username
   db_password = var.db_password
 }
 
 module "webserver_cluster" {
-  source = "../terraform-modules/modules/services/webserver-cluster"
+  source = "github.com/andremoreirafocus/terraform-modules.git//modules/services/webserver-cluster?ref=v0.0.1"
 
   cluster_name  = "example-webserver"
   instance_type = "t2.micro"
@@ -89,7 +89,7 @@ module "webserver_cluster" {
 }
 ```
 
-Define the sensitive database inputs in the consuming root and pass them by a secure mechanism such as CI secret variables or `TF_VAR_` environment variables. Do not commit credentials or `.tfstate` files.
+The examples use the current `v0.0.1` tag. For future releases, replace it with a tag that exists in this repository. Define the sensitive database inputs in the consuming root and pass them by a secure mechanism such as CI secret variables or `TF_VAR_` environment variables. Do not commit credentials or `.tfstate` files.
 
 ## Module development
 
