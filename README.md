@@ -1,76 +1,108 @@
-# Terraform AWS Tests
+# Terraform AWS Modules
 
-This project deploys a MySQL-backed web application in AWS Ohio (`us-east-2`). An Application Load Balancer routes HTTP traffic to EC2 instances in an Auto Scaling group. Terraform manages the database and web application together from one production root configuration and one remote state.
-
-```text
-global/s3/                           Creates the S3 backend bucket
-modules/data-stores/mysql/           Reusable MySQL RDS module
-modules/services/webserver-cluster/  Reusable ALB and Auto Scaling module
-prod/                                Production root configuration
-```
-
-## Architecture and state
-
-The `prod` root calls both reusable modules. It passes `module.mysql.db_address` and `module.mysql.db_port` directly to the webserver module. Terraform therefore creates the database before creating the launch template that renders those values into `user-data.sh`; no `terraform_remote_state` data source is used.
-
-The production root stores its combined state in this S3 object:
+This repository contains reusable Terraform modules only. It does **not** include environment root configurations, a remote-state backend, AWS provider configuration, credentials, `.env` files, or Terraform state.
 
 ```text
-terraform-up-and-running-state-andremoreirafocus/prod/systems/web-app/terraform.tfstate
+modules/
+├── data-stores/
+│   └── mysql/                 Provisions a MySQL RDS instance
+└── services/
+    └── webserver-cluster/     Provisions an ALB-backed EC2 Auto Scaling cluster
 ```
 
-The S3 backend uses server-side encryption and S3 lock files (`use_lockfile = true`). The backend bucket configuration also enables versioning and blocks public access.
+Use these modules from a separate root configuration for each environment (for example, `dev`, `stage`, or `prod`). The consuming root is responsible for its own backend, configured AWS provider, state lifecycle, credentials, and environment-specific values.
 
-## Prerequisites
+## Requirements
 
-- Terraform installed
-- AWS credentials with access to the backend bucket and permission to create the configured AWS resources
-- The backend bucket already created by `global/s3`
+- Terraform
+- AWS credentials with permissions appropriate for the resources your root configuration manages
+- An AWS provider configuration in the consuming root
 
-Create `prod/.env` locally; it is ignored by Git:
+Both modules declare their AWS provider requirement but deliberately contain no configured `provider` or `backend` blocks. Provider configuration is inherited from the calling root.
 
-```dotenv
-DB_USERNAME=your_database_username
-DB_PASSWORD=your_database_password
+## Modules
+
+### MySQL
+
+Source: `modules/data-stores/mysql`
+
+Creates an `aws_db_instance` running MySQL with 20 GiB of storage, the `db.t3.micro` instance class, database name `example_database`, and `skip_final_snapshot = true`.
+
+Inputs:
+
+- `db_username` (string, sensitive)
+- `db_password` (string, sensitive)
+
+Outputs:
+
+- `db_address` — RDS endpoint address
+- `db_port` — RDS port
+
+### Webserver cluster
+
+Source: `modules/services/webserver-cluster`
+
+Creates an Application Load Balancer, listener, target group, EC2 launch template, Auto Scaling group, and the associated security groups in the default VPC and its default-VPC subnets. Its user-data script starts BusyBox HTTP and renders the database address and port into the response page.
+
+Inputs:
+
+- `server_port` (number)
+- `cluster_name` (string)
+- `instance_type` (string)
+- `min_size` (number)
+- `max_size` (number)
+- `db_address` (string)
+- `db_port` (number)
+
+Outputs:
+
+- `alb_dns_name` — DNS name of the Application Load Balancer
+- `ec2_instance_private_ips` — private IPs of running Auto Scaling instances
+- `asg_name` — Auto Scaling group name
+
+## Example consumer configuration
+
+In an environment root outside this repository, reference the modules by a relative path (or pin a VCS release when consuming the repository remotely):
+
+```hcl
+provider "aws" {
+  region = "us-east-2"
+}
+
+module "mysql" {
+  source = "../terraform-modules/modules/data-stores/mysql"
+
+  db_username = var.db_username
+  db_password = var.db_password
+}
+
+module "webserver_cluster" {
+  source = "../terraform-modules/modules/services/webserver-cluster"
+
+  cluster_name  = "example-webserver"
+  instance_type = "t2.micro"
+  min_size      = 2
+  max_size      = 5
+  server_port   = 80
+  db_address    = module.mysql.db_address
+  db_port       = module.mysql.db_port
+}
 ```
 
-`prod/vars.sh` exports these values as Terraform input variables without printing them.
+Define the sensitive database inputs in the consuming root and pass them by a secure mechanism such as CI secret variables or `TF_VAR_` environment variables. Do not commit credentials or `.tfstate` files.
 
-## Deploy production
+## Module development
 
-Run from the repository root:
+From this repository root, format and validate the module configurations:
 
 ```bash
-cd prod
-source ./vars.sh
-terraform fmt -check
-terraform init
-terraform plan -var="server_port=80"
-terraform apply -var="server_port=80"
+terraform fmt -check -recursive
+terraform init -backend=false modules/data-stores/mysql
+terraform validate modules/data-stores/mysql
+terraform init -backend=false modules/services/webserver-cluster
+terraform validate modules/services/webserver-cluster
 ```
 
-Always review the plan before applying. After a successful apply, retrieve the load balancer address with:
+`terraform validate` checks configuration consistency only; planning or applying requires a consuming root that supplies the provider configuration, module inputs, and state backend.
 
-```bash
-terraform output -raw alb_dns_name
-```
-
-## Existing infrastructure and state migration
-
-The `prod` root is safe to apply as a new deployment. If MySQL or webserver resources were previously created from separate state files, do **not** apply the combined root until their state has been migrated or imported into the combined production state. Otherwise Terraform will not know those resources already exist and can propose duplicates.
-
-When intentionally changing a backend target, use `terraform init -migrate-state` to migrate state. Use `terraform init -reconfigure` only when refreshing Terraform's locally cached backend settings without moving state.
-
-## State locks
-
-Terraform creates an S3 lock object while planning or applying. If a command exits unexpectedly, a stale lock can remain. First confirm that no other Terraform plan, apply, CI job, or terminal is operating on the same state. Then release only the lock ID shown in Terraform's error:
-
-```bash
-terraform force-unlock <lock-id>
-```
-
-Do not use `-lock=false` for normal operations, and do not force-unlock a lock held by an active operation.
-
-## Repository hygiene
-
-Commit `.terraform.lock.hcl` files so all users select the same provider versions. Do not commit `.env`, `.terraform/`, or `*.tfstate` files.
+See [MySQL migration guidance](MYSQL_MODULE_MIGRATION.md) and [webserver cluster migration guidance](WEBSERVER_MODULE_MIGRATION.md) for moving existing root-managed resources into these modules without unintended replacement.
