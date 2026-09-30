@@ -6,6 +6,8 @@ This repository contains reusable Terraform modules only. It does **not** includ
 modules/
 ├── data-stores/
 │   └── mysql/                 Provisions a MySQL RDS instance
+├── landing-zone/
+│   └── iam-user/              Provisions one or more IAM users
 └── services/
     └── webserver-cluster/     Provisions an ALB-backed EC2 Auto Scaling cluster
 ```
@@ -38,6 +40,20 @@ Outputs:
 - `db_address` — RDS endpoint address
 - `db_port` — RDS port
 
+### IAM users
+
+Source: `modules/landing-zone/iam-user`
+
+Creates one AWS IAM user for every entry in `user_names`.
+
+Inputs:
+
+- `user_names` (list(string)) — names of the IAM users to create
+
+Outputs:
+
+- `all_users` — map of created `aws_iam_user` resources, keyed by user name
+
 ### Webserver cluster
 
 Source: `modules/services/webserver-cluster`
@@ -53,6 +69,8 @@ Inputs:
 - `max_size` (number)
 - `db_address` (string)
 - `db_port` (number)
+- `custom_tags` (map(string), optional) — additional tags propagated to Auto Scaling instances
+- `user_names` (list(string), optional) — currently declared by the module but not used to create or configure resources
 
 Outputs:
 
@@ -62,7 +80,7 @@ Outputs:
 
 ## Example consumer configuration
 
-Reference a tagged version of each module from this repository:
+Reference a tagged version of each module from this repository. The current release is `v0.0.5`.
 
 ```hcl
 provider "aws" {
@@ -70,14 +88,20 @@ provider "aws" {
 }
 
 module "mysql" {
-  source = "github.com/andremoreirafocus/terraform-modules.git//modules/data-stores/mysql?ref=v0.0.1"
+  source = "github.com/andremoreirafocus/terraform-modules.git//modules/data-stores/mysql?ref=v0.0.5"
 
   db_username = var.db_username
   db_password = var.db_password
 }
 
+module "iam_users" {
+  source = "github.com/andremoreirafocus/terraform-modules.git//modules/landing-zone/iam-user?ref=v0.0.5"
+
+  user_names = ["neo", "trinity", "morpheus"]
+}
+
 module "webserver_cluster" {
-  source = "github.com/andremoreirafocus/terraform-modules.git//modules/services/webserver-cluster?ref=v0.0.1"
+  source = "github.com/andremoreirafocus/terraform-modules.git//modules/services/webserver-cluster?ref=v0.0.5"
 
   cluster_name  = "example-webserver"
   instance_type = "t2.micro"
@@ -86,10 +110,31 @@ module "webserver_cluster" {
   server_port   = 80
   db_address    = module.mysql.db_address
   db_port       = module.mysql.db_port
+
+  custom_tags = {
+    Environment = "production"
+    ManagedBy   = "Terraform"
+  }
 }
 ```
 
-The examples use the current `v0.0.1` tag. For future releases, replace it with a tag that exists in this repository. Define the sensitive database inputs in the consuming root and pass them by a secure mechanism such as CI secret variables or `TF_VAR_` environment variables. Do not commit credentials or `.tfstate` files.
+Define the sensitive database inputs in the consuming root and pass them by a secure mechanism such as CI secret variables or `TF_VAR_` environment variables. Do not commit credentials or `.tfstate` files.
+
+## Releases and version tags
+
+A module source pinned with `?ref=v0.0.5` always uses the commit tagged `v0.0.5`; later commits are not included automatically. Therefore, every release that should be available to external Terraform consumers must have a new, immutable version tag.
+
+After committing a release, create an annotated tag on that commit and push both the commit and tag. For example, the release after `v0.0.5` could be `v0.0.6`:
+
+```bash
+git add modules/<changed-module>
+git commit -m "feat: describe the released change"
+git tag -a v0.0.6 -m "Describe the release"
+git push origin main
+git push origin v0.0.6
+```
+
+Then update each consumer that needs the release to use `?ref=v0.0.6`. Do not move or reuse an existing release tag: keeping tags tied to their original commits makes deployments reproducible. A commit that is not released with a new tag remains unavailable to consumers pinned to an earlier tag.
 
 ## Module development
 
@@ -99,6 +144,8 @@ From this repository root, format and validate the module configurations:
 terraform fmt -check -recursive
 terraform init -backend=false modules/data-stores/mysql
 terraform validate modules/data-stores/mysql
+terraform init -backend=false modules/landing-zone/iam-user
+terraform validate modules/landing-zone/iam-user
 terraform init -backend=false modules/services/webserver-cluster
 terraform validate modules/services/webserver-cluster
 ```
